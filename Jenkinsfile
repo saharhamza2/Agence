@@ -2,40 +2,42 @@ pipeline {
   agent any
 
   options {
-    buildDiscarder(logRotator(numToKeepStr: '10')) // conserve 10 builds max
-    timeout(time: 60, unit: 'MINUTES')            // timeout global du pipeline
-    ansiColor('xterm')
+    buildDiscarder(logRotator(numToKeepStr: '10'))   // garde 10 builds
+    timeout(time: 60, unit: 'MINUTES')               // timeout pipeline
+    timestamps()                                      // logs propres
   }
 
   triggers {
-    // Décommenter si tu veux polling (moins recommandé qu'un webhook)
-    // pollSCM('H/5 * * * *')
+    // Poll SCM toutes les 5 minutes (auto-detection de changements git)
+    pollSCM('H/5 * * * *')
   }
 
   parameters {
-    string(name: 'BRANCH', defaultValue: 'main', description: 'Branch à builder')
+    string(name: 'BRANCH', defaultValue: 'main', description: 'Branche à construire')
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         checkout([$class: 'GitSCM',
           branches: [[name: "*/${params.BRANCH}"]],
-          userRemoteConfigs: [[url: 'https://github.com/saharhamza2/Agence.git']]])
+          userRemoteConfigs: [[url: 'https://github.com/saharhamza2/Agence.git']]
+        ])
       }
     }
 
+    // Détection du type de projet (Maven ou Node.js)
     stage('Detect & Install') {
       steps {
         script {
-          if (fileExists('package.json')) {
-            echo "Detected Node project (package.json). Installing dependencies..."
+          if (fileExists('pom.xml')) {
+            echo "Projet détecté : Maven"
+          } else if (fileExists('package.json')) {
+            echo "Projet détecté : Node.js"
             sh 'npm ci'
-          } else if (fileExists('pom.xml')) {
-            echo "Detected Maven project (pom.xml). Nothing to install here."
-            // on peut ajouter: sh 'mvn -B -DskipTests=false dependency:resolve'
           } else {
-            echo "No package.json or pom.xml found — skipping install step."
+            echo "Aucun build system détecté (ni Maven, ni Node.js)"
           }
         }
       }
@@ -44,55 +46,61 @@ pipeline {
     stage('Build') {
       steps {
         script {
-          if (fileExists('package.json')) {
-            sh 'npm run build || echo "no build script or build failed"'
-          } else if (fileExists('pom.xml')) {
-            sh 'mvn -B -DskipTests clean package'
+          if (fileExists('pom.xml')) {
+            sh 'mvn clean package -DskipTests=false'
+          } else if (fileExists('package.json')) {
+            sh 'npm run build || echo "Pas de script build dans package.json"'
           } else {
-            echo "Nothing to build"
+            echo "Skip build"
           }
         }
       }
     }
 
-    stage('Test') {
+    stage('Tests') {
       steps {
         script {
-          if (fileExists('package.json')) {
+          if (fileExists('pom.xml')) {
+            sh 'mvn test'
+          } else if (fileExists('package.json')) {
             sh 'npm test || true'
-          } else if (fileExists('pom.xml')) {
-            sh 'mvn test || true'
           } else {
-            echo "No tests to run"
+            echo "Pas de tests"
           }
         }
       }
       post {
         always {
-          // adapte ces patterns si tu génères des rapports JUnit
+          // Rapports tests Maven (JUnit)
           junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
         }
       }
     }
 
-    stage('Archive') {
+    stage('Archive Artifacts') {
       steps {
         script {
-          if (fileExists('dist')) {
-            archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: true
-          } else if (fileExists('target')) {
+          if (fileExists('target')) {
             archiveArtifacts artifacts: 'target/*.jar', allowEmptyArchive: true
+          } else if (fileExists('dist')) {
+            archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: true
           } else {
-            echo "No standard artifacts found to archive"
+            echo "Aucun artefact à archiver"
           }
         }
       }
     }
-  } // end stages
+  }
 
   post {
-    success { echo "Succès — ${env.JOB_NAME} #${env.BUILD_NUMBER}" }
-    failure { echo "Échec — ${env.JOB_NAME} #${env.BUILD_NUMBER}" }
-    always { cleanWs() }
+    success {
+      echo "✔ BUILD SUCCESS : ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+    }
+    failure {
+      echo "❌ BUILD FAILED : ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+    }
+    always {
+      cleanWs()   // nettoie workspace pour éviter conflits
+    }
   }
 }
